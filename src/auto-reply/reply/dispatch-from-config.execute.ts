@@ -217,9 +217,6 @@ export async function executeDispatch(state: PrepareDispatchExecutionReadyState)
                 toolLifecycleOptions,
               ),
               onToolResult: (payload) => {
-                if (state.replyOperationRunState.heartbeat) {
-                  return Promise.resolve();
-                }
                 state.getDispatchReplyOperation()?.recordActivity();
                 markProgress();
                 const run = async () => {
@@ -453,7 +450,6 @@ export async function executeDispatch(state: PrepareDispatchExecutionReadyState)
     const failedAgentRun = getAgentRunTerminalOutcome() === "failed";
     const adopted = state.turnAdoptionState?.adopted === true;
     if (
-      params.replyOptions?.isHeartbeat === true ||
       (!failedAgentRun && !didDeliverVisiblePartialReply && !adopted) ||
       isDispatchOperationAborted()
     ) {

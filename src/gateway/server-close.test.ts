@@ -735,7 +735,7 @@ describe("createGatewayCloseHandler", () => {
     expect(stopCronMaintenance.mock.invocationCallOrder[0]).toBeLessThan(
       httpClose.mock.invocationCallOrder[0]!,
     );
-    expect(deps.heartbeatRunner.stop).toHaveBeenCalledTimes(1);
+    expect(deps.stopScheduledServices).toHaveBeenCalledTimes(1);
     expect(httpClose).toHaveBeenCalled();
     expect(result.warnings.length).toBeGreaterThan(0);
     expect(getActivePluginRegistry()).toBeNull();
@@ -783,7 +783,7 @@ describe("createGatewayCloseHandler", () => {
           expect(await pluginServices.stop()).toEqual({ errors: [failure] });
           expect(stop).toHaveBeenCalledOnce();
         }
-        expect(deps.heartbeatRunner.stop).toHaveBeenCalledOnce();
+        expect(deps.stopScheduledServices).toHaveBeenCalledOnce();
       } finally {
         await pluginServices.stop().catch(() => {});
         await instance.dispose();
@@ -806,7 +806,7 @@ describe("createGatewayCloseHandler", () => {
     expect(result.warnings).toStrictEqual([]);
     expect(result.durationMs).toBeGreaterThanOrEqual(0);
     expect(deps.cron.stop).toHaveBeenCalledTimes(1);
-    expect(deps.heartbeatRunner.stop).toHaveBeenCalledTimes(1);
+    expect(deps.stopScheduledServices).toHaveBeenCalledTimes(1);
     expect(deps.stopMediaCleanup).toHaveBeenCalledTimes(1);
     expect(deps.chatRunState.clear).toHaveBeenCalledTimes(1);
     expect(lifecycleSlot.size).toBe(0);
@@ -1336,7 +1336,7 @@ describe("createGatewayCloseHandler", () => {
       await expect(Promise.all(exits)).resolves.toHaveLength(2);
       await vi.advanceTimersByTimeAsync(0);
       expect(stopChannel).toHaveBeenCalledWith("discord");
-      expect(deps.heartbeatRunner.stop).toHaveBeenCalledOnce();
+      expect(deps.stopScheduledServices).toHaveBeenCalledOnce();
       expect(mocks.closePluginStateDatabaseAsync).not.toHaveBeenCalled();
       expect(closed).toBe(false);
 

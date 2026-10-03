@@ -109,10 +109,9 @@ describe("outbox", () => {
     await store.enqueueIntent({
       ...turn,
       engineId,
-      isHeartbeat: false,
       admission: turn.boundary.admission,
     });
-    await store.acceptIntent({ ...turn, engineId, isHeartbeat: false });
+    await store.acceptIntent({ ...turn, engineId });
   }
 
   function outbox(turn: Turn, source = authority, owner = actor) {
@@ -132,7 +131,6 @@ describe("outbox", () => {
     return outbox(turn, source, owner).publishClosedTurn({
       ...turn,
       engineId,
-      isHeartbeat: false,
       maxBytes: 10_000,
       maxEvents: 10,
     });

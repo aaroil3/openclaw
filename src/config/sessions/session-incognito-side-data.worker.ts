@@ -7,7 +7,6 @@ import {
   readBoardWidgetDocument,
 } from "../../boards/sqlite-board-store.kernel.js";
 import { readSessionTitleFieldsFromTranscript } from "../../gateway/session-transcript-title-reader.js";
-import type { HeartbeatOutcomeWorkerOperations } from "../../infra/heartbeat-outcome-store.worker.js";
 import { runtimeProcessEntrypoints } from "../../infra/runtime-process-entrypoints.js";
 import { resolveRuntimeWorkerUrl } from "../../infra/runtime-worker-url.js";
 import { withSqlitePostCommitPublications } from "../../infra/sqlite-post-commit.js";
@@ -42,7 +41,6 @@ import type { SessionSharingWorkerOperations } from "./session-sharing-store.typ
 import { listSessionSuggestionsInDatabase } from "./session-suggestion-store.kernel.js";
 
 type DomainOperations = SessionSharingWorkerOperations &
-  HeartbeatOutcomeWorkerOperations &
   ProgressCardWorkerOperations &
   BoardWriteOperations;
 type Command = SqliteWorkerCommand<IncognitoSideDataOperations>;
@@ -94,15 +92,13 @@ export function createIncognitoSideDataWorker(
       const module =
         command.type.startsWith("session.sharing.") || command.type === "session.category.apply"
           ? runtimeProcessEntrypoints.sessionSharingStore
-          : command.type.startsWith("session.heartbeat.")
-            ? runtimeProcessEntrypoints.heartbeatOutcomeStore
-            : command.type === "session.boards.applyOps" ||
-                command.type === "session.boards.putWidget" ||
-                command.type === "session.boards.grant"
-              ? runtimeProcessEntrypoints.boardStore
-              : command.type === "session.progressCard.put"
-                ? runtimeProcessEntrypoints.progressCardStore
-                : undefined;
+          : command.type === "session.boards.applyOps" ||
+              command.type === "session.boards.putWidget" ||
+              command.type === "session.boards.grant"
+            ? runtimeProcessEntrypoints.boardStore
+            : command.type === "session.progressCard.put"
+              ? runtimeProcessEntrypoints.progressCardStore
+              : undefined;
       if (module) {
         binding = {
           id: randomUUID(),
@@ -253,10 +249,6 @@ export function createIncognitoSideDataWorker(
               keys = prepared.value;
               return executeDomain({ type: "category.apply", input });
             }
-            case "session.heartbeat.persist":
-              return executeDomain({ type: "persist", input: command.input });
-            case "session.heartbeat.claim":
-              return executeDomain({ type: "claim", input: command.input });
             case "session.reaction.set":
               return result(reactions.execute(command, context));
             case "session.category.keys":
