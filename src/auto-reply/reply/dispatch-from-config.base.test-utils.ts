@@ -1642,6 +1642,7 @@ describe("dispatchReplyFromConfig", () => {
       dispatcher,
       replyOptions: {
         scheduledAutomation: {
+          admissionSource: "operator-schedule",
           job: { ...makeCronJob({}), idleOnly: true },
           assertCurrent: () => {},
         },
