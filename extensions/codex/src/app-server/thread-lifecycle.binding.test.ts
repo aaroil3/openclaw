@@ -4,7 +4,7 @@ import path from "node:path";
 import { AgentHarnessPreflightError } from "openclaw/plugin-sdk/agent-harness-runtime";
 import { createDeferred } from "openclaw/plugin-sdk/extension-shared";
 import { patchSessionEntry, upsertSessionEntry } from "openclaw/plugin-sdk/session-store-runtime";
-import { describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import { resumeThread } from "../command-handler-bindings.js";
 import { resolveCodexCommandDeps } from "../command-handler-deps.js";
 import {
@@ -549,6 +549,12 @@ async function createManualResumeFixture(
 }
 
 setupRunAttemptTestHooks();
+let nativeSkillTestHome: string | undefined;
+beforeEach(() => {
+  nativeSkillTestHome ??= tempDir;
+  vi.stubEnv("HOME", nativeSkillTestHome);
+  vi.stubEnv("CODEX_HOME", "");
+});
 
 async function createLeasedLifecycleWireClient(
   agentDir: string,
