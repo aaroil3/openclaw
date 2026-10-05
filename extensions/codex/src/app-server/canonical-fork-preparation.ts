@@ -284,8 +284,9 @@ export async function prepareCanonicalCodexFork(params: {
       networkProxyConfigFingerprint: appServer.networkProxy?.configFingerprint,
       nativeSkillIsolationFingerprint: nativeSkillIsolation
         ? fingerprintJsonObject({
-            version: 1,
+            version: 2,
             disabledUserSkillPaths: nativeSkillIsolation.disabledUserSkillPaths,
+            suppressNativeSkillInstructions: nativeSkillIsolation.suppressNativeSkillInstructions,
           })
         : undefined,
       userMcpServersFingerprint: fingerprintUserMcpServersConfigPatch(userMcp),

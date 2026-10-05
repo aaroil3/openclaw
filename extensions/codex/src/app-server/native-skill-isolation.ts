@@ -8,6 +8,7 @@ import type { JsonObject, JsonValue } from "./protocol.js";
 
 export type CodexNativeSkillIsolation = {
   disabledUserSkillPaths: string[];
+  suppressNativeSkillInstructions: boolean;
 };
 
 const MAX_PERSONAL_SKILL_DIRECTORIES = 2_000;
@@ -199,7 +200,7 @@ async function collectPersonalSkillRealPaths(
   return { complete, skillPaths };
 }
 
-/** Resolves the native user-scope skills that an isolated OpenClaw thread must disable. */
+/** Resolves native skill rules required by the OpenClaw thread boundary. */
 export async function resolveCodexNativeSkillIsolation(params: {
   client: CodexAppServerClient;
   codexHome?: string;
@@ -209,9 +210,6 @@ export async function resolveCodexNativeSkillIsolation(params: {
   signal?: AbortSignal;
 }): Promise<CodexNativeSkillIsolation | undefined> {
   params.signal?.throwIfAborted();
-  if (!process.env.OPENCLAW_STATE_DIR?.trim()) {
-    return undefined;
-  }
   const key = JSON.stringify([
     path.resolve(resolveStateDir()),
     path.resolve(params.cwd),
@@ -283,6 +281,7 @@ async function resolveUncachedCodexNativeSkillIsolation(
           disabledUserSkillPaths: [...skillPaths].toSorted((left, right) =>
             left.localeCompare(right),
           ),
+          suppressNativeSkillInstructions: false,
         }
       : undefined;
   }
@@ -315,10 +314,11 @@ async function resolveUncachedCodexNativeSkillIsolation(
   }
   return {
     disabledUserSkillPaths: [...skillPaths].toSorted((left, right) => left.localeCompare(right)),
+    suppressNativeSkillInstructions: true,
   };
 }
 
-/** Applies path-exact session rules after caller config so isolated user skills stay disabled. */
+/** Applies path-exact rules and non-default-state catalog isolation after caller config. */
 export function applyCodexNativeSkillIsolation(
   config: JsonObject | undefined,
   isolation: CodexNativeSkillIsolation | undefined,
@@ -336,7 +336,7 @@ export function applyCodexNativeSkillIsolation(
   }));
   return {
     ...config,
-    "skills.include_instructions": false,
+    ...(isolation.suppressNativeSkillInstructions ? { "skills.include_instructions": false } : {}),
     "skills.config": [...(existingRules ?? []), ...disabledRules],
   };
 }

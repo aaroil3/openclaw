@@ -109,6 +109,7 @@ it("retries a failed native skill reload instead of caching its rejection", asyn
         );
         await expect(resolveCodexNativeSkillIsolation(params)).resolves.toEqual({
           disabledUserSkillPaths: [],
+          suppressNativeSkillInstructions: true,
         });
         expect(request).toHaveBeenCalledTimes(2);
       },
@@ -182,7 +183,10 @@ it("restarts an in-flight scan after native skills change in an already-read roo
           await fs.writeFile(lateSkill, "late");
           await fixture.notify({ method: "skills/changed", params: {} });
           releaseScan.resolve();
-          await expect(resolving).resolves.toEqual({ disabledUserSkillPaths: [lateSkill] });
+          await expect(resolving).resolves.toEqual({
+            disabledUserSkillPaths: [lateSkill],
+            suppressNativeSkillInstructions: true,
+          });
           expect(request).toHaveBeenCalledTimes(2);
         } finally {
           releaseScan.resolve();
@@ -417,9 +421,9 @@ it("captures a personal skill created during the authoritative Codex reload", as
 });
 
 it.each([
-  ["current plugin identity", { pluginId: "visualize@openai-bundled" }],
-  ["legacy cache identity", {}],
-])("disables renderer-incompatible Codex skills via %s", async (_label, metadata) => {
+  ["current plugin identity", { pluginId: "visualize@openai-bundled" }, ".openclaw"],
+  ["legacy cache identity with implicit default state", {}, undefined],
+])("disables renderer-incompatible Codex skills via %s", async (_label, metadata, stateDir) => {
   await withNativeSkillHome(async (home) => {
     const visualizeSkill = path.join(
       home,
@@ -453,12 +457,26 @@ it.each([
     }));
 
     const isolation = await withEnvAsync(
-      { HOME: home, OPENCLAW_STATE_DIR: path.join(home, ".openclaw") },
+      {
+        HOME: home,
+        OPENCLAW_STATE_DIR: stateDir ? path.join(home, stateDir) : undefined,
+      },
       async () => await resolveCodexNativeSkillIsolation({ client, cwd: home }),
     );
-    expect(applyCodexNativeSkillIsolation(undefined, isolation)).toEqual({
-      "skills.include_instructions": false,
-      "skills.config": [{ path: visualizeSkill, enabled: false }],
+    expect(
+      applyCodexNativeSkillIsolation(
+        {
+          "skills.include_instructions": true,
+          "skills.config": [{ path: otherSkill, enabled: true }],
+        },
+        isolation,
+      ),
+    ).toEqual({
+      "skills.include_instructions": true,
+      "skills.config": [
+        { path: otherSkill, enabled: true },
+        { path: visualizeSkill, enabled: false },
+      ],
     });
   });
 });
