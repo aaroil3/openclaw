@@ -648,6 +648,7 @@ export function setupRunAttemptTestHooks(options: { sessionOwner?: null } = {}):
       cleanup();
     }),
   );
+  let testHome: string | undefined;
 
   beforeEach(async (context) => {
     if (!context.codexAttemptRuntime) {
@@ -679,6 +680,9 @@ export function setupRunAttemptTestHooks(options: { sessionOwner?: null } = {}):
     vi.stubEnv("OPENAI_API_KEY", "");
     stubCodexInferenceTransportEnv();
     tempDir = tempDirs.make("openclaw-codex-run-", resolvePreferredOpenClawTmpDir());
+    testHome ??= tempDir;
+    vi.stubEnv("HOME", testHome);
+    vi.stubEnv("CODEX_HOME", "");
     await context.codexAttemptRuntime.start();
     // createParams models an ordinary durable session; seeded native bindings
     // must have the same authoritative core owner as a real resumed conversation.

@@ -437,7 +437,11 @@ it.each([
       "SKILL.md",
     );
     const otherSkill = path.join(home, ".codex", "plugins", "cache", "other", "SKILL.md");
-    const { client } = createFakeCodexAppServerClient(async () => ({
+    if (!stateDir) {
+      await fs.mkdir(path.dirname(visualizeSkill), { recursive: true });
+      await fs.writeFile(visualizeSkill, "visualize");
+    }
+    const { client, request } = createFakeCodexAppServerClient(async () => ({
       data: [
         {
           cwd: home,
@@ -458,6 +462,7 @@ it.each([
 
     const isolation = await withEnvAsync(
       {
+        CODEX_HOME: undefined,
         HOME: home,
         OPENCLAW_STATE_DIR: stateDir ? path.join(home, stateDir) : undefined,
       },
@@ -478,6 +483,7 @@ it.each([
         { path: visualizeSkill, enabled: false },
       ],
     });
+    expect(request).toHaveBeenCalledTimes(stateDir ? 1 : 0);
   });
 });
 

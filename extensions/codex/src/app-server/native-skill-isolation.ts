@@ -16,6 +16,12 @@ const MAX_PERSONAL_SKILL_DEPTH = 6;
 const MAX_PERSONAL_SKILL_ENTRIES = 10_000;
 const CODEX_VISUALIZE_PLUGIN_ID = "visualize@openai-bundled";
 const CODEX_VISUALIZE_LEGACY_PATH = "/plugins/cache/openai-bundled/visualize/";
+const CODEX_VISUALIZE_CACHE_RELATIVE_PATH = path.join(
+  "plugins",
+  "cache",
+  "openai-bundled",
+  "visualize",
+);
 // Keep one bounded workspace/environment snapshot per physical app-server client.
 const nativeSkillIsolationByClient = new WeakMap<
   CodexAppServerClient,
@@ -67,6 +73,55 @@ async function usesDefaultStateDir(): Promise<boolean> {
     canonicalizeExistingPath(path.join(home, ".openclaw")),
   ]);
   return stateDir === defaultStateDir;
+}
+
+async function collectImplicitDefaultVisualizeSkillPaths(params: {
+  codexHome?: string;
+  home?: string;
+  userProfile?: string;
+}): Promise<string[]> {
+  const home =
+    params.home?.trim() ||
+    process.env.HOME?.trim() ||
+    params.userProfile?.trim() ||
+    process.env.USERPROFILE?.trim() ||
+    os.homedir();
+  const codexHomes = new Set([
+    path.join(home, ".codex"),
+    params.codexHome?.trim() || process.env.CODEX_HOME?.trim() || "",
+  ]);
+  const skillPaths = new Set<string>();
+  for (const codexHome of codexHomes) {
+    if (!codexHome) {
+      continue;
+    }
+    const visualizeRoot = path.join(codexHome, CODEX_VISUALIZE_CACHE_RELATIVE_PATH);
+    const candidates = [path.join(visualizeRoot, "skills", "visualize", "SKILL.md")];
+    try {
+      const versions = await fs.readdir(visualizeRoot, { withFileTypes: true });
+      for (const version of versions) {
+        if (version.isDirectory()) {
+          candidates.push(
+            path.join(visualizeRoot, version.name, "skills", "visualize", "SKILL.md"),
+          );
+        }
+      }
+    } catch (error) {
+      if (!isMissingPathError(error)) {
+        throw error;
+      }
+    }
+    for (const candidate of candidates) {
+      try {
+        skillPaths.add(await fs.realpath(candidate));
+      } catch (error) {
+        if (!isMissingPathError(error)) {
+          throw error;
+        }
+      }
+    }
+  }
+  return [...skillPaths].toSorted((left, right) => left.localeCompare(right));
 }
 
 async function collectPersonalSkillRealPaths(
@@ -210,6 +265,12 @@ export async function resolveCodexNativeSkillIsolation(params: {
   signal?: AbortSignal;
 }): Promise<CodexNativeSkillIsolation | undefined> {
   params.signal?.throwIfAborted();
+  if (!process.env.OPENCLAW_STATE_DIR?.trim()) {
+    const disabledUserSkillPaths = await collectImplicitDefaultVisualizeSkillPaths(params);
+    return disabledUserSkillPaths.length > 0
+      ? { disabledUserSkillPaths, suppressNativeSkillInstructions: false }
+      : undefined;
+  }
   const key = JSON.stringify([
     path.resolve(resolveStateDir()),
     path.resolve(params.cwd),
