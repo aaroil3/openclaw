@@ -567,6 +567,9 @@ function defaultAttemptHarnessResponse(method: string) {
   if (method === "config/read") {
     return { config: {}, origins: {}, layers: [] };
   }
+  if (method === "skills/list") {
+    return { data: [] };
+  }
   if (method === "turn/start") {
     return turnStartResult();
   }
