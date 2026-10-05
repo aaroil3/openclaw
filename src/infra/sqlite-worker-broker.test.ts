@@ -17,6 +17,8 @@ import {
   appendWorkerRow as append,
   readWorkerRows as read,
 } from "./sqlite-worker-fixture.test-support.js";
+import { readDatabasePathIdentitySync } from "./sqlite-worker-identity.js";
+import { createSqliteWorkerOperationAdmission } from "./sqlite-worker-operation-admission.js";
 import {
   reserveSqliteWorkerInputPreparation,
   runSqliteWorkerStoreOperation,
@@ -184,6 +186,155 @@ it.each([
     }
     expect(await read(store)).toEqual(revoke ? ["before"] : ["before", "queued"]);
     expect(caller.getStore()).toBeUndefined();
+  },
+);
+
+poolIt.each([
+  { authority: "guard", revoke: false },
+  { authority: "guard", revoke: true },
+  { authority: "factory", revoke: false },
+  { authority: "factory", revoke: true },
+  { authority: "existing", revoke: false },
+  { authority: "existing", revoke: true },
+] as const)(
+  "retains queued actor-open context and live ownership ($authority, revoke: $revoke)",
+  async ({ authority, revoke }) => {
+    const parallelism = vi.spyOn(os, "availableParallelism").mockReturnValue(16);
+    const broker = new SqliteWorkerBroker();
+    const moduleUrl = new URL("./sqlite-worker-store.test-support.ts", import.meta.url);
+    const file = databasePath();
+    const markerPath = `${file}.opened`;
+    const held = createDeferredCore();
+    const enqueued = createDeferredCore();
+    let release: (() => void) | undefined;
+    let predecessor: Promise<unknown> | undefined;
+    let outcome:
+      | Promise<PromiseSettledResult<SqliteWorkerStore<FixtureOperations> | undefined>[]>
+      | undefined;
+    const messages = vi.spyOn(Worker.prototype, "emit");
+    let unsubscribe = () => {};
+    try {
+      if (authority === "existing") {
+        const seed = await broker.open<FixtureOperations>({
+          moduleUrl,
+          databasePath: file,
+          input: undefined,
+        });
+        assert(seed);
+        await seed.close();
+      }
+      const busy = await broker.open<FixtureOperations>({
+        moduleUrl,
+        databasePath: databasePath(),
+        input: undefined,
+      });
+      assert(busy);
+      const filler = await broker.open<FixtureOperations>({
+        moduleUrl,
+        databasePath: databasePath(),
+        input: undefined,
+      });
+      assert(filler);
+      const busyThread = (await append(busy, "before")).threadId;
+      await waitForDiagnosticEventsDrained();
+      messages.mockImplementation(function (
+        this: Worker,
+        event: string | symbol,
+        ...args: unknown[]
+      ) {
+        if (event === "message" && this.threadId === busyThread) {
+          messages.mockRestore();
+          release = () => EventEmitter.prototype.emit.call(this, event, ...args);
+          held.resolve();
+          return true;
+        }
+        return EventEmitter.prototype.emit.call(this, event, ...args);
+      });
+      predecessor = append(busy, "held predecessor");
+      await held.promise;
+      unsubscribe = onInternalDiagnosticEvent(
+        (event) => {
+          if (
+            event.type === "worker.request" &&
+            event.kind === "sqlite_writer" &&
+            event.requestClass === "open" &&
+            event.phase === "queued"
+          ) {
+            enqueued.resolve();
+          }
+        },
+        { include: ["worker.request"] },
+      );
+      const caller = new AsyncLocalStorage<{ current: boolean }>();
+      const owner = { current: true };
+      const revoked = new Error("Queued actor-open owner was revoked");
+      const assertCurrent = () => {
+        assert.equal(caller.getStore(), owner, "Queued actor open lost its caller context");
+        if (!owner.current) {
+          throw revoked;
+        }
+      };
+      outcome = Promise.allSettled([
+        caller.run(owner, () =>
+          broker.open<FixtureOperations>(
+            {
+              moduleUrl,
+              databasePath: file,
+              input: { type: "observe", markerPath },
+              ...(authority === "existing"
+                ? {
+                    existingOnly: true,
+                    admission: { identity: readDatabasePathIdentitySync(file).key, assertCurrent },
+                  }
+                : {}),
+            },
+            undefined,
+            authority === "existing" ? undefined : assertCurrent,
+            authority === "factory"
+              ? {
+                  createAdmission: () => ({
+                    nativeLocations: [file],
+                    admission: createSqliteWorkerOperationAdmission((_request, grant) => {
+                      assertCurrent();
+                      grant();
+                    }),
+                  }),
+                }
+              : {},
+          ),
+        ),
+      ]);
+      await enqueued.promise;
+      owner.current = !revoke;
+      expect(caller.getStore()).toBeUndefined();
+      // Dispatch from the predecessor's Worker reply, outside the new actor's owner.
+      assert(release);
+      release();
+      release = undefined;
+      await predecessor;
+      const [opened] = await outcome;
+      if (revoke) {
+        expect(opened).toEqual({ status: "rejected", reason: revoked });
+        expect(existsSync(markerPath)).toBe(false);
+      } else {
+        assert(
+          opened?.status === "fulfilled",
+          String(opened?.status === "rejected" ? opened.reason : "Missing open outcome"),
+        );
+        assert(opened.value);
+        await append(opened.value, "accepted");
+        expect(await read(opened.value)).toEqual(["accepted"]);
+        expect(existsSync(markerPath)).toBe(true);
+      }
+      expect(await read(busy)).toEqual(["before", "held predecessor"]);
+    } finally {
+      unsubscribe();
+      messages.mockRestore();
+      release?.();
+      await Promise.allSettled([predecessor, outcome]);
+      await broker.close();
+      parallelism.mockRestore();
+    }
   },
 );
 
