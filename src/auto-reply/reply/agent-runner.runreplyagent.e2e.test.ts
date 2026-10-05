@@ -61,12 +61,15 @@ import { resolveActiveExplicitSteerSessionKey } from "./explicit-steer-routing.j
 import type { InternalGetReplyOptions } from "./get-reply.types.js";
 import {
   enqueueFollowupRun,
+  parkSteerCandidate,
   refreshQueuedFollowupSession,
   scheduleFollowupDrain,
   type FollowupRun,
   type QueueSettings,
 } from "./queue.js";
 import { clearFollowupQueueForTest } from "./queue.test-helpers.js";
+import { clearFollowupDrainCallback } from "./queue/drain.js";
+import { clearFollowupQueue, getExistingFollowupQueue } from "./queue/state.js";
 import { REPLY_ADMISSION_TICKET, reserveReplyAdmissionTicket } from "./reply-admission-ticket.js";
 import {
   REPLY_OPERATION_RUN_STATE,
@@ -629,6 +632,9 @@ function requireBuiltChannelSourceTurnId(
 
 describe("runReplyAgent active steering", () => {
   it("queues instead of steering when privilege facts differ on the active route", async () => {
+    const actualQueue = await vi.importActual<typeof import("./queue.js")>("./queue.js");
+    vi.mocked(parkSteerCandidate).mockImplementation(actualQueue.parkSteerCandidate);
+    vi.useFakeTimers();
     const activeRoute = { provider: "openai", model: "gpt-fallback" };
     const { followupRun, run } = createMinimalRun({
       isActive: true,
@@ -656,11 +662,19 @@ describe("runReplyAgent active steering", () => {
     active.bindToolAuthorityRoute(activeRoute);
     active.setPhase("running");
 
-    await expect(run()).resolves.toBeUndefined();
+    try {
+      await expect(run()).resolves.toBeUndefined();
 
-    expect(state.queueEmbeddedAgentMessageMock).not.toHaveBeenCalled();
-    expect(vi.mocked(enqueueFollowupRun)).toHaveBeenCalledOnce();
-    active.complete();
+      expect(state.queueEmbeddedAgentMessageMock).not.toHaveBeenCalled();
+      expect(getExistingFollowupQueue("main")?.items).toEqual([followupRun]);
+      expect(followupRun.steerPending).toBeUndefined();
+      expect(state.runEmbeddedAgentMock).not.toHaveBeenCalled();
+    } finally {
+      clearFollowupQueue("main");
+      clearFollowupDrainCallback("main");
+      active.complete();
+      vi.useRealTimers();
+    }
   });
 
   it("keeps the replacement source when retired admission completes", async ({ signal }) => {
@@ -833,15 +847,26 @@ describe("runReplyAgent active steering", () => {
     active.complete();
   });
 
-  it("drains an authority-mismatched turn after its provided operation clears", async () => {
+  it("drains an authority-mismatched turn only after its target operation clears", async ({
+    signal,
+  }) => {
+    const actualQueue = await vi.importActual<typeof import("./queue.js")>("./queue.js");
+    vi.mocked(parkSteerCandidate).mockImplementation(actualQueue.parkSteerCandidate);
+    vi.useFakeTimers();
+    const target = createReplyOperation({
+      sessionKey: "main",
+      sessionId: "session",
+      resetTriggered: false,
+    });
+    target.bindToolAuthoritySnapshot({
+      fingerprint: () => "different-authority",
+      project: () => "different-authority",
+    });
+    target.setPhase("running");
     const provided = createReplyOperation({
       sessionKey: "agent:main:telegram:slash:source",
       sessionId: "provided-session",
       resetTriggered: false,
-    });
-    provided.bindToolAuthoritySnapshot({
-      fingerprint: () => "different-authority",
-      project: () => "different-authority",
     });
     provided.setPhase("running");
     const { followupRun, run } = createMinimalRun({
@@ -856,18 +881,48 @@ describe("runReplyAgent active steering", () => {
     });
     const image = { type: "image" as const, data: "queued", mimeType: "image/png" };
     followupRun.images = [image];
+    let deferredAttempt = createDeferred();
+    const settled = createDeferred();
+    followupRun.turnAdoptionLifecycle = {
+      onAdopted: async () => {},
+      onDeferredHeartbeat: () => deferredAttempt.resolve(),
+      onSettled: () => settled.resolve(),
+    };
 
-    await expect(run()).resolves.toBeUndefined();
+    try {
+      await expect(run()).resolves.toBeUndefined();
 
-    expect(vi.mocked(enqueueFollowupRun)).toHaveBeenCalledOnce();
-    expect(vi.mocked(scheduleFollowupDrain)).not.toHaveBeenCalled();
-    provided.complete();
-    expect(vi.mocked(scheduleFollowupDrain)).toHaveBeenCalledOnce();
-    await requireScheduledFollowupRunner()(followupRun);
-    expect(mockCallArgs(state.runEmbeddedAgentMock, "queued image drain")[0]).toMatchObject({
-      images: [image],
-      modelHasVision: true,
-    });
+      expect(state.queueEmbeddedAgentMessageMock).not.toHaveBeenCalled();
+      expect(getExistingFollowupQueue("main")?.items).toEqual([followupRun]);
+      expect(followupRun.steerPending).toBeUndefined();
+      expect(vi.mocked(scheduleFollowupDrain)).not.toHaveBeenCalled();
+      await vi.advanceTimersByTimeAsync(500);
+      await withinTest(deferredAttempt.promise, signal);
+      expect(state.runEmbeddedAgentMock).not.toHaveBeenCalled();
+      expect(getExistingFollowupQueue("main")?.items).toEqual([followupRun]);
+      deferredAttempt = createDeferred();
+      provided.complete();
+      await vi.advanceTimersByTimeAsync(500);
+      await withinTest(deferredAttempt.promise, signal);
+      expect(vi.mocked(scheduleFollowupDrain)).not.toHaveBeenCalled();
+      expect(state.runEmbeddedAgentMock).not.toHaveBeenCalled();
+      expect(getExistingFollowupQueue("main")?.items).toEqual([followupRun]);
+      target.complete();
+      expect(vi.mocked(scheduleFollowupDrain)).toHaveBeenCalledOnce();
+      await vi.advanceTimersByTimeAsync(500);
+      await withinTest(settled.promise, signal);
+      expect(state.runEmbeddedAgentMock).toHaveBeenCalledOnce();
+      expect(mockCallArgs(state.runEmbeddedAgentMock, "queued image drain")[0]).toMatchObject({
+        images: [image],
+        modelHasVision: true,
+      });
+    } finally {
+      clearFollowupQueue("main");
+      clearFollowupDrainCallback("main");
+      target.complete();
+      provided.complete();
+      vi.useRealTimers();
+    }
   });
 
   it("keeps the continuing Telegram task's typing alive after an accepted steer", async () => {
@@ -3670,7 +3725,7 @@ describe("runReplyAgent typing and silence", () => {
 
         const { run } = createMinimalRun({
           opts: {},
-          runOverrides: { silentExpected: true },
+          runOverrides: { terminalReplyExpectation: "optional" },
           sessionKey: "main",
           storePath,
         });
