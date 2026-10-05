@@ -87,12 +87,12 @@ describe("runCronIsolatedAgentTurn - meta.error status propagation", () => {
   setupRunCronIsolatedAgentTurnSuite();
 
   it.each([
-    { mode: "announce", blocked: false, runs: 0 },
-    { mode: "none", blocked: false, runs: 1 },
-    { mode: "announce", blocked: true, runs: 1 },
+    { mode: "announce", blocked: false },
+    { mode: "none", blocked: false },
+    { mode: "announce", blocked: true },
   ] as const)(
-    "missing owner route with mode=$mode and DM block=$blocked admits $runs model calls",
-    async ({ mode, blocked, runs }) => {
+    "executes with missing owner route, mode=$mode and DM block=$blocked",
+    async ({ mode, blocked }) => {
       mockRunCronFallbackPassthrough();
       const summary =
         "Owner delivery unavailable (no-route); configure an authorized owner DM or edit this automation's delivery";
@@ -111,23 +111,13 @@ describe("runCronIsolatedAgentTurn - meta.error status propagation", () => {
       const result = await runTurn({
         job: makeIsolatedAgentJobFixture({ delivery: { mode, target: "owner" } }),
       });
-      expect(runEmbeddedAgentMock).toHaveBeenCalledTimes(runs);
-      if (runs === 0) {
-        expect(result).toMatchObject({
-          status: "skipped",
-          executionStarted: false,
-          delivered: false,
-          deliveryAttempted: false,
-          summary,
-        });
-        expect(dispatchCronDeliveryMock).not.toHaveBeenCalled();
-      } else {
-        expect(result.status).toBe("ok");
-        expectDispatch({
-          deliveryRequested: mode === "announce",
-          skipDelivery: blocked ? "channel_transform" : undefined,
-        });
-      }
+      expect(runEmbeddedAgentMock).toHaveBeenCalledOnce();
+      expect(result.status).toBe("ok");
+      expectDispatch({
+        deliveryRequested: mode === "announce",
+        skipDelivery: blocked ? "channel_transform" : undefined,
+        resolvedDelivery: expect.objectContaining({ ok: false, error: expect.any(Error) }),
+      });
     },
   );
 
