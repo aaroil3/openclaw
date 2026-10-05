@@ -13,6 +13,8 @@ export type CodexNativeSkillIsolation = {
 const MAX_PERSONAL_SKILL_DIRECTORIES = 2_000;
 const MAX_PERSONAL_SKILL_DEPTH = 6;
 const MAX_PERSONAL_SKILL_ENTRIES = 10_000;
+const CODEX_VISUALIZE_PLUGIN_ID = "visualize@openai-bundled";
+const CODEX_VISUALIZE_LEGACY_PATH = "/plugins/cache/openai-bundled/visualize/";
 // Keep one bounded workspace/environment snapshot per physical app-server client.
 const nativeSkillIsolationByClient = new WeakMap<
   CodexAppServerClient,
@@ -30,6 +32,20 @@ const nativeSkillIsolationByClient = new WeakMap<
 
 function isMissingPathError(error: unknown): boolean {
   return (error as NodeJS.ErrnoException).code === "ENOENT";
+}
+
+function isUnsupportedCodexVisualizeSkill(skill: {
+  name: string;
+  path: string;
+  pluginId?: string | null;
+}): boolean {
+  if (skill.pluginId) {
+    return skill.pluginId === CODEX_VISUALIZE_PLUGIN_ID;
+  }
+  return (
+    skill.name === "visualize" &&
+    skill.path.replaceAll("\\", "/").includes(CODEX_VISUALIZE_LEGACY_PATH)
+  );
 }
 
 async function canonicalizeExistingPath(candidate: string): Promise<string> {
@@ -248,14 +264,28 @@ export async function resolveCodexNativeSkillIsolation(params: {
 async function resolveUncachedCodexNativeSkillIsolation(
   params: Parameters<typeof resolveCodexNativeSkillIsolation>[0],
 ): Promise<CodexNativeSkillIsolation | undefined> {
-  if (await usesDefaultStateDir()) {
-    return undefined;
-  }
   const response = await params.client.request(
     "skills/list",
     { cwds: [params.cwd], forceReload: true },
     { signal: params.signal },
   );
+  const skillPaths = new Set<string>();
+  for (const entry of response.data) {
+    for (const skill of entry.skills) {
+      if (isUnsupportedCodexVisualizeSkill(skill)) {
+        skillPaths.add(skill.path);
+      }
+    }
+  }
+  if (await usesDefaultStateDir()) {
+    return skillPaths.size > 0
+      ? {
+          disabledUserSkillPaths: [...skillPaths].toSorted((left, right) =>
+            left.localeCompare(right),
+          ),
+        }
+      : undefined;
+  }
   const effectiveHome =
     params.home?.trim() ||
     process.env.HOME?.trim() ||
@@ -265,13 +295,16 @@ async function resolveUncachedCodexNativeSkillIsolation(
   if (process.platform === "win32") {
     homes.push(params.userProfile?.trim() || os.homedir());
   }
-  const { complete, skillPaths } = await collectPersonalSkillRealPaths(
+  const personalSkills = await collectPersonalSkillRealPaths(
     [...new Set(homes.map((home) => path.resolve(home)))],
     params.codexHome,
   );
+  for (const skillPath of personalSkills.skillPaths) {
+    skillPaths.add(skillPath);
+  }
   // Codex also labels explicit plugin and extra roots as user scope. Preserve those on a
   // complete provenance scan; fall back to all user paths only when personal-root proof failed.
-  if (!complete) {
+  if (!personalSkills.complete) {
     for (const entry of response.data) {
       for (const skill of entry.skills) {
         if (skill.scope === "user") {

@@ -324,7 +324,7 @@ it("disables native user-scope skills only for non-default state directories", a
         ).resolves.toBe(undefined);
       },
     );
-    expect(request).not.toHaveBeenCalled();
+    expect(request).toHaveBeenCalledTimes(1);
 
     const isolation = await withEnvAsync(
       {
@@ -339,11 +339,12 @@ it("disables native user-scope skills only for non-default state directories", a
           home,
         }),
     );
-    expect(request).toHaveBeenCalledWith(
+    expect(request).toHaveBeenLastCalledWith(
       "skills/list",
       { cwds: [workspace], forceReload: true },
       { signal: undefined },
     );
+    expect(request).toHaveBeenCalledTimes(2);
     expect(
       applyCodexNativeSkillIsolation(
         { "skills.config": [{ path: projectSkillRealPath, enabled: true }] },
@@ -412,6 +413,53 @@ it("captures a personal skill created during the authoritative Codex reload", as
       async () => await resolveCodexNativeSkillIsolation({ client, cwd: home }),
     );
     expect(isolation?.disabledUserSkillPaths).toEqual([await fs.realpath(skillPath)]);
+  });
+});
+
+it.each([
+  ["current plugin identity", { pluginId: "visualize@openai-bundled" }],
+  ["legacy cache identity", {}],
+])("disables renderer-incompatible Codex skills via %s", async (_label, metadata) => {
+  await withNativeSkillHome(async (home) => {
+    const visualizeSkill = path.join(
+      home,
+      ".codex",
+      "plugins",
+      "cache",
+      "openai-bundled",
+      "visualize",
+      "skills",
+      "visualize",
+      "SKILL.md",
+    );
+    const otherSkill = path.join(home, ".codex", "plugins", "cache", "other", "SKILL.md");
+    const { client } = createFakeCodexAppServerClient(async () => ({
+      data: [
+        {
+          cwd: home,
+          errors: [],
+          skills: [
+            {
+              ...skill("visualize", visualizeSkill, "user", "Render inline visualizations"),
+              ...metadata,
+            },
+            {
+              ...skill("other", otherSkill, "user", "Other plugin skill"),
+              pluginId: "other@example",
+            },
+          ],
+        },
+      ],
+    }));
+
+    const isolation = await withEnvAsync(
+      { HOME: home, OPENCLAW_STATE_DIR: path.join(home, ".openclaw") },
+      async () => await resolveCodexNativeSkillIsolation({ client, cwd: home }),
+    );
+    expect(applyCodexNativeSkillIsolation(undefined, isolation)).toEqual({
+      "skills.include_instructions": false,
+      "skills.config": [{ path: visualizeSkill, enabled: false }],
+    });
   });
 });
 

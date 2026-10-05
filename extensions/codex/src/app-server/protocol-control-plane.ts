@@ -196,6 +196,7 @@ type CodexSkillMetadata = {
   path: string;
   scope: CodexSkillScope;
   enabled: boolean;
+  pluginId?: string | null;
 };
 
 type CodexSkillErrorInfo = {
