@@ -13,7 +13,6 @@ import type { OpenClawConfig } from "../../config/config.js";
 import {
   loadSessionEntry,
   markSessionAbortTarget,
-  replaceSessionEntry,
   resolveSessionAbortTarget,
   type SessionAbortTargetResult,
 } from "../../config/sessions/session-accessor.js";
@@ -25,6 +24,7 @@ import { getAbortMemory, isAbortRequestText, setAbortMemory } from "./abort-prim
 import { enqueueAbortFollowupRun } from "./abort-queue.test-support.js";
 import {
   addSubagentFixture,
+  writeAbortSessionStore,
   type SubagentRunFixture,
 } from "./abort-subagent-registry.test-support.js";
 import { isAbortTrigger } from "./abort-trigger-text.js";
@@ -106,18 +106,6 @@ describe("abort detection", () => {
     setAbortMemory(key, value);
   }
 
-  async function writeSessionStore(
-    storePath: string,
-    sessionIdsByKey: Record<string, string>,
-    nowMs = Date.now(),
-  ) {
-    await Promise.all(
-      Object.entries(sessionIdsByKey).map(([sessionKey, sessionId]) =>
-        replaceSessionEntry({ storePath, sessionKey }, { sessionId, updatedAt: nowMs }),
-      ),
-    );
-  }
-
   function readAbortSessionEntry(storePath: string, sessionKey: string) {
     return loadSessionEntry({ storePath, sessionKey });
   }
@@ -139,7 +127,7 @@ describe("abort detection", () => {
       for (const sessionKey of Object.keys(params.sessionIdsByKey)) {
         trackedAbortMemoryKeys.add(sessionKey);
       }
-      await writeSessionStore(storePath, params.sessionIdsByKey, params.nowMs);
+      await writeAbortSessionStore(storePath, params.sessionIdsByKey, params.nowMs);
     }
     return { root, storePath, cfg };
   }
@@ -645,7 +633,7 @@ describe("abort detection", () => {
 
     expect(runtimeAbortMocks.abortEmbeddedAgentRun).toHaveBeenCalledWith(sessionId);
     expect(runtimeAbortMocks.abortEmbeddedAgentRun).toHaveBeenCalledWith(childSessionId);
-    expect(getSubagentRunByChildSessionKey(childKey)).toMatchObject({
+    expect(await getSubagentRunByChildSessionKey(childKey)).toMatchObject({
       endedReason: "subagent-killed",
       killReconciliation: { suppressTaskDelivery: true },
     });
@@ -778,7 +766,9 @@ describe("abort detection", () => {
         replacement.abortSignal.aborted,
         "do not rediscover a replacement parent after ACP settles",
       ).toBe(false);
-      expect(getSubagentRunByChildSessionKey("agent:main:subagent:during-acp-wait")).toBeNull();
+      expect(
+        await getSubagentRunByChildSessionKey("agent:main:subagent:during-acp-wait"),
+      ).toBeNull();
     } finally {
       proceed.resolve();
       await pending;
@@ -1198,8 +1188,10 @@ describe("abort detection", () => {
       }),
     ).resolves.toEqual({ stopped: 1, failed: 1 });
     expect(failedTombstone).toBe(true);
-    expect(getSubagentRunByChildSessionKey(firstChildKey)?.killIntent).toBeDefined();
-    expect(getSubagentRunByChildSessionKey(secondChildKey)?.endedReason).toBe("subagent-killed");
+    expect((await getSubagentRunByChildSessionKey(firstChildKey))?.killIntent).toBeDefined();
+    expect((await getSubagentRunByChildSessionKey(secondChildKey))?.endedReason).toBe(
+      "subagent-killed",
+    );
     expectSessionLaneCleared(firstChildKey);
     expectSessionLaneCleared(secondChildKey);
   });
@@ -1274,7 +1266,7 @@ describe("abort detection", () => {
 
     expect(result).toEqual({ stopped: 1, failed: 0 });
     expectSessionLaneCleared(childKey);
-    expect(getSubagentRunByChildSessionKey(childKey)).toMatchObject({
+    expect(await getSubagentRunByChildSessionKey(childKey)).toMatchObject({
       endedReason: "subagent-killed",
       killReconciliation: { suppressTaskDelivery: true },
     });
@@ -1339,8 +1331,10 @@ describe("abort detection", () => {
 
     expect(result.stoppedSubagents).toBe(1);
     expectSessionLaneCleared(depth2Key);
-    expect(getSubagentRunByChildSessionKey(depth1Key)?.endedReason).not.toBe("subagent-killed");
-    expect(getSubagentRunByChildSessionKey(depth2Key)?.endedReason).toBe("subagent-killed");
+    expect((await getSubagentRunByChildSessionKey(depth1Key))?.endedReason).not.toBe(
+      "subagent-killed",
+    );
+    expect((await getSubagentRunByChildSessionKey(depth2Key))?.endedReason).toBe("subagent-killed");
   });
 
   it("stopSubagentsForRequester does not traverse a child that moved to a newer parent", async () => {
@@ -1389,8 +1383,8 @@ describe("abort detection", () => {
     });
 
     expect(result).toEqual({ stopped: 0, failed: 0 });
-    expect(getSubagentRunByChildSessionKey(childKey)?.execution.endedAt).toBeUndefined();
-    expect(getSubagentRunByChildSessionKey(leafKey)?.execution.endedAt).toBeUndefined();
+    expect((await getSubagentRunByChildSessionKey(childKey))?.execution.endedAt).toBeUndefined();
+    expect((await getSubagentRunByChildSessionKey(leafKey))?.execution.endedAt).toBeUndefined();
   });
 });
 /* oxlint-disable max-lines -- TODO: split this grandfathered oversized file. */

@@ -2,6 +2,7 @@ import { mutateSubagentRuns } from "../../agents/subagents/registry/subagent-reg
 import { registerSubagentRun } from "../../agents/subagents/registry/subagent-registry.js";
 import { getSubagentRunByChildSessionKey } from "../../agents/subagents/registry/subagent-registry.test-helpers.js";
 import type { SubagentRunRecord } from "../../agents/subagents/registry/subagent-registry.types.js";
+import { replaceSessionEntry } from "../../config/sessions/session-accessor.js";
 
 export type SubagentRunFixture = Parameters<typeof registerSubagentRun>[0] & {
   createdAt: number;
@@ -20,7 +21,7 @@ export async function addSubagentFixture({
   ...run
 }: SubagentRunFixture) {
   await registerSubagentRun({ requesterAgentId: "main", ...run });
-  const entry = getSubagentRunByChildSessionKey(run.childSessionKey);
+  const entry = await getSubagentRunByChildSessionKey(run.childSessionKey);
   if (!entry || entry.runId !== run.runId) {
     throw new Error(`Subagent fixture registration did not publish ${run.runId}`);
   }
@@ -50,4 +51,16 @@ export async function addSubagentFixture({
       ]),
     };
   });
+}
+
+export async function writeAbortSessionStore(
+  storePath: string,
+  sessionIdsByKey: Record<string, string>,
+  nowMs = Date.now(),
+) {
+  await Promise.all(
+    Object.entries(sessionIdsByKey).map(([sessionKey, sessionId]) =>
+      replaceSessionEntry({ storePath, sessionKey }, { sessionId, updatedAt: nowMs }),
+    ),
+  );
 }
