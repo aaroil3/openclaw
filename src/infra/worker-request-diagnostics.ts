@@ -1,17 +1,55 @@
-import { basename } from "node:path";
 import { resolveGlobalSingleton } from "../shared/global-singleton.js";
 import { hasInternalDiagnosticEventInterest } from "./diagnostic-event-listener-presence.js";
 import { emitTrustedDiagnosticEvent } from "./diagnostic-events.js";
-import type {
-  DiagnosticWorkerRequestFields,
-  WorkerRequestKind,
-} from "./diagnostic-process-types.js";
+import type { DiagnosticWorkerRequestFields } from "./diagnostic-process-types.js";
+import {
+  classifySqliteWorkerExecute,
+  sqliteWorkerRequestClasses,
+} from "./sqlite-worker-request-class.js";
+import type { WorkerRequestKind } from "./worker-request-kind.js";
 
 export type WorkerRequestObservation = { started(): void; completed(): void };
+
+// Exact owner commands only: SDK callers may supply private suffixes.
+const sessionCommands = new Set([
+  "session.actor.read",
+  "session.actor.acceptInput",
+  "session.actor.adoptRun",
+  "session.actor.appendToolResult",
+  "session.actor.appendTranscriptEvent",
+  "session.actor.completeTurn",
+  "session.actor.deliveryPending",
+  "session.actor.deliverySettled",
+  "session.actor.patch",
+  "session.entry.read",
+  "session.entry.patch.prepare",
+  "session.entry.patch.commit",
+  "session.entry.replacements.prepare",
+  "session.entry.replacements.commit",
+  "session.lifecycle.project",
+  "session.maintenance.read",
+  "session.pendingInputs.read",
+  "session.pendingInputs.mutate",
+  "session.turn.prepare",
+  "session.turn.commit",
+]);
+
+const requestPrefixes = [
+  ["pluginState.", "plugin_state"],
+  ["session.history.", "transcript_read"],
+  ["trajectory.", "transcripts"],
+  ["session.transcript.", "transcripts"],
+  ["transcripts.", "transcripts"],
+  ["session.", "sessions"],
+  ["cron.", "cron"],
+] as const;
 
 export function classifyWorkerRequest(commandType: PropertyKey): string {
   if (typeof commandType !== "string") {
     return "execute";
+  }
+  if (sessionCommands.has(commandType)) {
+    return commandType;
   }
   if (commandType === "auth-profile-rows") {
     return "auth_profiles";
@@ -19,23 +57,12 @@ export function classifyWorkerRequest(commandType: PropertyKey): string {
   if (commandType === "database.domain.execute") {
     return "domain_execute";
   }
-  if (commandType.startsWith("pluginState.")) {
-    return "plugin_state";
+  for (const [prefix, requestClass] of requestPrefixes) {
+    if (commandType.startsWith(prefix)) {
+      return requestClass;
+    }
   }
-  if (commandType.startsWith("session.history.")) {
-    return "transcript_read";
-  }
-  if (
-    commandType.startsWith("trajectory.") ||
-    commandType.startsWith("session.transcript.") ||
-    commandType.startsWith("transcripts.")
-  ) {
-    return "transcripts";
-  }
-  if (commandType.startsWith("session.")) {
-    return "sessions";
-  }
-  return commandType.startsWith("cron.") ? "cron" : "execute";
+  return classifySqliteWorkerExecute(commandType);
 }
 
 const queued = resolveGlobalSingleton(
@@ -43,41 +70,15 @@ const queued = resolveGlobalSingleton(
   () => new Map<WorkerRequestKind, number>(),
 );
 
-export function workerRequestKind(url: URL, sharedCompute?: boolean): WorkerRequestKind {
-  switch (basename(url.pathname).replace(/\.(?:ts|mjs)$/, ".js")) {
-    case "identity-file.worker.js":
-      return "identity";
-    case "identity-avatar-file.worker.js":
-      return "avatar";
-    case "catalog-page.worker.js":
-      return "catalog";
-    case "session-history.worker.js":
-    case "session-transcript.worker.js":
-    case "session-accessor.sqlite-transcript-reports.worker.js":
-    case "session-accessor.sqlite-archive.worker.js":
-      return "transcript";
-    case "sqlite-readonly-location.worker.js":
-      return "sqlite_read";
-    case "openclaw-state-read.worker.js":
-      return "state_read";
-    case "read-only.worker.js":
-      return "cron";
-    default:
-      return sharedCompute ? "compute" : "other";
-  }
-}
-
 const requestClasses = new Set([
+  ...sessionCommands,
+  ...sqliteWorkerRequestClasses,
+  ...requestPrefixes.map(([, requestClass]) => requestClass),
   "task",
   "open",
   "close",
   "execute",
-  "transcript_read",
-  "cron",
-  "sessions",
-  "transcripts",
   "domain_execute",
-  "plugin_state",
   "auth_profiles",
 ]);
 

@@ -2,11 +2,12 @@
 // oxfmt-ignore
 import { useSubagentControlFixture } from "./subagent-control.test-support.js";
 /** Registry projections must agree with admitted execution and queue owners. */
-import { afterEach, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { createDeferred } from "../../../../test/helpers/promise.js";
 import { buildSubagentsStatusLine } from "../../../auto-reply/reply/commands-status-subagents.js";
 import { resolveSubagentEntryForToken } from "../../../auto-reply/reply/commands-subagents/shared.js";
 import { getRuntimeConfig } from "../../../config/config.js";
+import { setRuntimeConfigSnapshot } from "../../../config/runtime-snapshot.js";
 import { projectGatewaySessionRunState } from "../../../gateway/session-utils-display.js";
 import {
   claimAgentRunContext,
@@ -45,20 +46,24 @@ import {
   isSubagentRunLive,
   isSubagentRunQueued,
   isSubagentSessionRunActive,
+  listActiveSubagentSessionKeys,
 } from "./subagent-registry-read.js";
 import { preserveSubagentRunForRestart } from "./subagent-registry-run-pause.js";
+import { loadSubagentRegistryFromSqlite } from "./subagent-registry-state.fixture.test-support.js";
 import {
   countActiveRunsForSession,
   markSubagentRunTerminated,
   registerSubagentRun,
 } from "./subagent-registry.js";
 import { writeSubagentSessionEntry } from "./subagent-registry.persistence.test-support.js";
-import { loadSubagentRegistryFromSqlite } from "./subagent-registry.store.sqlite.js";
 import { addSubagentRunForTests, testing } from "./subagent-registry.test-helpers.js";
 import { getSubagentRunRuntimeKey } from "./subagent-run-generation.js";
 import { resolveSubagentSessionStatus } from "./subagent-session-metrics.js";
 
 const fixture = useSubagentControlFixture();
+beforeEach(() => {
+  setRuntimeConfigSnapshot({ agents: { defaults: { workspace: fixture.stateDir } } });
+});
 const parent = "agent:main:liveness-parent";
 const start = Date.parse("2026-09-13T12:00:00Z");
 const olderThanCutoff = start + 2 * 60 * 60 * 1000 + 1;
@@ -79,6 +84,8 @@ async function register(id: string, collect = false, expectsCompletionMessage = 
   await registerSubagentRun({
     runId: id,
     childSessionKey,
+    childAgentId: "main",
+    sessionEntry: { sessionId: `${id}-session`, lifecycleRevision: `${id}-revision` },
     requesterSessionKey: parent,
     requesterAgentId: "main",
     requesterDisplayKey: parent,
@@ -262,6 +269,8 @@ it("retains an exact queued collector reservation without calling it executor-li
     }),
   ).toBe(true);
   const entry = await register("queued-owned", true);
+  expect(getAgentRunContext(entry.runId)).toBeUndefined();
+  expect(listActiveSubagentSessionKeys()).toEqual([entry.childSessionKey]);
   const launch = vi.fn(async () => {});
   activateSwarmRun({
     groupId: "liveness-group",
@@ -302,6 +311,7 @@ it("retains an exact queued collector reservation without calling it executor-li
   expect(updated).not.toBe(entry);
   expect(isSubagentRunQueued(entry)).toBe(true);
   expect(isSubagentRunQueued(updated)).toBe(true);
+  expect(listActiveSubagentSessionKeys()).toEqual([entry.childSessionKey]);
   expect(prepared.getExecutionObservation(prepared.runs[0]!)).toMatchObject({ state: "queued" });
   const copied = { ...updated };
   expect(isSubagentRunQueued(copied)).toBe(false);
@@ -344,6 +354,7 @@ it("retains an exact queued collector reservation without calling it executor-li
     expect(captured.countPendingDescendantRuns(parent)).toBe(0);
     expect(captured.hasDescendantRunAwaitingSettle(parent)).toBe(false);
     expect(isSubagentRunQueued(entry)).toBe(false);
+    expect(listActiveSubagentSessionKeys()).toEqual([]);
     expect(prepared.getExecutionObservation(prepared.runs[0]!)).toMatchObject({ state: "unknown" });
     expect(countActiveRunsForSession(parent, { collect: true })).toBe(0);
     const released = buildSubagentSessionListReadIndex();

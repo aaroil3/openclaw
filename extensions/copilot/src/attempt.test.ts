@@ -193,20 +193,12 @@ function createStubToolBridge(
 const TINY_PNG_BASE64 =
   "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAACXBIWXMAAAsTAAALEwEAmpwYAAAADUlEQVR4nGP4////KwAJ5gPoxLp9owAAAABJRU5ErkJggg==";
 
+type TranscriptAppendParams = Parameters<
+  typeof import("openclaw/plugin-sdk/session-transcript-runtime").appendSessionTranscriptMessageByIdentityStrict
+>[0];
+
 const transcriptRuntimeMock = vi.hoisted(() => ({
-  append: vi.fn(async (params: Record<string, unknown>) => {
-    const prepare = params.prepareMessageAfterIdempotencyCheck as
-      | ((message: unknown) => unknown)
-      | undefined;
-    const message = prepare ? prepare(params.message) : params.message;
-    return message
-      ? {
-          appended: true,
-          message,
-          messageId: (params.eventId as string | undefined) ?? "transcript-message",
-        }
-      : undefined;
-  }),
+  append: vi.fn(appendPreparedTranscriptMessage),
   appendBatch: vi.fn(async (params: { messages: Array<Record<string, unknown>> }) =>
     params.messages.map((message) => ({
       appended: true,
@@ -215,7 +207,7 @@ const transcriptRuntimeMock = vi.hoisted(() => ({
     })),
   ),
   publish: vi.fn(async () => undefined),
-  appendStrict: vi.fn(async (params: Record<string, unknown>) => {
+  appendStrict: vi.fn(async (params: TranscriptAppendParams) => {
     const result = await transcriptRuntimeMock.append(params);
     return result ? { kind: "result" as const, result } : { kind: "suppressed" as const };
   }),
@@ -234,16 +226,14 @@ vi.mock("openclaw/plugin-sdk/session-transcript-runtime", async (importOriginal)
   };
 });
 
-async function appendPreparedTranscriptMessage(params: Record<string, unknown>) {
-  const prepare = params.prepareMessageAfterIdempotencyCheck as
-    | ((message: unknown) => unknown)
-    | undefined;
-  const message = prepare ? prepare(params.message) : params.message;
+async function appendPreparedTranscriptMessage(params: TranscriptAppendParams) {
+  const prepare = params.preparation?.prepareMessage;
+  const message = prepare ? await prepare(params.message) : params.message;
   return message
     ? {
         appended: true,
         message,
-        messageId: (params.eventId as string | undefined) ?? "transcript-message",
+        messageId: params.eventId ?? "transcript-message",
       }
     : undefined;
 }
@@ -353,6 +343,7 @@ function makeParams(
     agentDir: "C:\\copilot-home",
     agentId: "agent-1",
     auth: { useLoggedInUser: true, ...(overrides as { auth?: object }).auth },
+    authProfileStore: { version: 1, profiles: {} },
     disableTools: true,
     hostCapabilities: createCopilotTestHostCapabilities(),
     initialReplayState: undefined,
@@ -551,7 +542,7 @@ describe("runCopilotAttempt", () => {
   });
 
   it("hands the foreground prompt context to agent-end side effects", async () => {
-    const runAgentEndSideEffects = vi.spyOn(agentHarnessRuntime, "runAgentEndSideEffects");
+    const runAgentEnd = vi.spyOn(agentHarnessRuntime, "runAgentEndSideEffectsAsync");
     const params = makeParams({
       memberRoleIds: ["maintainer-role"],
       messageChannel: "discord",
@@ -559,7 +550,7 @@ describe("runCopilotAttempt", () => {
 
     await runCopilotAttempt(params, { pool: makeFakePool(makeFakeSdk()) });
 
-    const ctx = runAgentEndSideEffects.mock.calls.at(-1)?.[0]?.ctx;
+    const ctx = runAgentEnd.mock.calls.at(-1)?.[0]?.ctx;
     expect(ctx?.foregroundPromptContext?.memberRoleIds).toEqual(["maintainer-role"]);
     expect(ctx?.foregroundPromptContext?.agentDir).toBe(params.agentDir);
   });

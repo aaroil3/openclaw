@@ -1,13 +1,20 @@
-import { expect, it, vi } from "vitest";
+import { afterEach, expect, it, vi } from "vitest";
+import {
+  clearRuntimeConfigSnapshot,
+  setRuntimeConfigSnapshot,
+} from "../config/runtime-snapshot.js";
 import {
   beginSessionWorkAdmission,
   runExclusiveSessionLifecycleMutation,
 } from "../sessions/session-lifecycle-admission.js";
 import { createGatewayWorkerPlacementReclaimBarriers } from "./server-worker-placement-reclaim.js";
 
+afterEach(clearRuntimeConfigSnapshot);
+
 it.each(["active", "failed"] as const)(
   "a %s reclaim whose canonical cancellation rejects still retires old pending work",
   async (state) => {
+    setRuntimeConfigSnapshot({});
     const scope = `/fixture/cancel-failure-${state}.sqlite`;
     const sessionKey = "agent:main:cancel-failure";
     const sessionId = "cancel-failure-session";
@@ -30,12 +37,13 @@ it.each(["active", "failed"] as const)(
     const barriers = createGatewayWorkerPlacementReclaimBarriers({
       placements: {
         get: () => ({ state, sessionId }) as never,
+        getAsync: async () => ({ state, sessionId }) as never,
         waitForTurnClaimRelease: vi.fn(),
       },
       loadSessionRuntime: async () =>
         ({
           managedWorktrees: {
-            findLiveByOwner: () => ({
+            findLiveByOwner: async () => ({
               id: "cancel-failure-worktree",
               ownerId: sessionKey,
               path: "/fixture/workspace",

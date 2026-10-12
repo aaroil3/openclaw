@@ -1,6 +1,7 @@
 import { setImmediate as nextTurn } from "node:timers/promises";
 import { expectDefined } from "@openclaw/normalization-core";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { setRuntimeConfigSnapshot } from "../../config/runtime-snapshot.js";
 import { upsertSessionEntryCore } from "../../config/sessions/session-accessor.js";
 import { emitAgentEvent, getAgentEventLifecycleGeneration } from "../../infra/agent-events.js";
 import { clearAgentRunContext, registerAgentRunContext } from "../../infra/agent-run-registry.js";
@@ -262,6 +263,7 @@ describe("agent.wait gateway dedupe observations", () => {
   it("keeps visible queued waits available after the terminal observation expires", async () => {
     await withOpenClawTestState({ scenario: "minimal" }, async () => {
       const cfg = rolePolicyConfig();
+      setRuntimeConfigSnapshot(cfg);
       const owner = roleClient("none", "queued-owner");
       const other = roleClient("none", "queued-other");
       const session = {
@@ -338,6 +340,8 @@ describe("agent.wait gateway dedupe observations", () => {
     "keeps a pending wait bound to its original registration after %s",
     async (transition) => {
       await withOpenClawTestState({ scenario: "minimal" }, async () => {
+        const cfg = rolePolicyConfig();
+        setRuntimeConfigSnapshot(cfg);
         const owner = roleClient("none", "timeout-owner");
         const session = {
           sessionKey: "agent:main:timeout-rotation",
@@ -359,7 +363,7 @@ describe("agent.wait gateway dedupe observations", () => {
         const runId = `wait-timeout-${transition}`;
         registerAgentRunContext(runId, session);
         const context = createGatewayRequestContext(makeContextParams());
-        context.getRuntimeConfig = rolePolicyConfig;
+        context.getRuntimeConfig = () => cfg;
         const respond = vi.fn();
         const handler = expectDefined(agentHandlers["agent.wait"], "registered wait handler");
         vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
@@ -503,6 +507,60 @@ describe("agent.wait gateway dedupe observations", () => {
     } finally {
       controller.abort();
       await selected;
+    }
+  });
+
+  it("observes later queue admission without completing terminal or another Gateway's waits", async () => {
+    vi.useFakeTimers();
+    const runId = "queued-after-wait";
+    const context = createGatewayRequestContext(makeContextParams());
+    const otherContext = createGatewayRequestContext(makeContextParams());
+    const service = createAgentTurnService({ context, isWebchatConnect: () => false });
+    const otherService = createAgentTurnService({
+      context: otherContext,
+      isWebchatConnect: () => false,
+    });
+    const queuedObserved = vi.fn();
+    const terminalObserved = vi.fn();
+    const otherObserved = vi.fn();
+    const queuedWait = service.waitForTurn({ runId, timeoutMs: 30_000 }).then(queuedObserved);
+    const terminalWait = waitForAgentJob({ runId, timeoutMs: 30_000, source: "chat" }).then(
+      terminalObserved,
+    );
+    const otherWait = otherService.waitForTurn({ runId, timeoutMs: 30_000 }).then(otherObserved);
+    const controller = new AbortController();
+    const session = {
+      sessionKey: "agent:main:queued-after-wait",
+      sessionId: "queued-after-wait-session",
+      agentId: "main",
+      lifecycleGeneration: getAgentEventLifecycleGeneration(),
+    };
+    try {
+      expect(
+        registerQueuedChatTurn({
+          chatQueuedTurns: context.chatQueuedTurns,
+          runId,
+          controller,
+          ...session,
+        }),
+      ).toBe(true);
+      setGatewayDedupeEntry({
+        dedupe: context.dedupe,
+        key: `chat:${runId}`,
+        session,
+        entry: { ts: Date.now(), ok: true, payload: { runId, status: "accepted" } },
+      });
+      await vi.advanceTimersByTimeAsync(0);
+      expect(queuedObserved).toHaveBeenCalledWith({
+        session,
+        result: { runId, status: "pending", timeoutPhase: "queue", providerStarted: false },
+      });
+      expect(terminalObserved).not.toHaveBeenCalled();
+      expect(otherObserved).not.toHaveBeenCalled();
+    } finally {
+      controller.abort();
+      completeRun(context.dedupe, runId, "chat");
+      await Promise.all([queuedWait, terminalWait, otherWait]);
     }
   });
 

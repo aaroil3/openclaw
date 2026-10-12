@@ -36,16 +36,15 @@ export async function prepareGatewayKernelRequestRuntime(params: {
     startupState,
     shutdownRuntime,
   } = runtime;
-  const chatMetadataLifecycle = await startupTrace.measure("gateway.chat-metadata-lifecycle", () =>
-    createGatewayChatMetadataLifecycle({ getConfig: getRuntimeConfig, log }),
-  );
-  const configRevisionProjector = await startupTrace.measure(
-    "gateway.config-revision-key",
-    async () => {
+  const [chatMetadataLifecycle, configRevisionProjector] = await Promise.all([
+    startupTrace.measure("gateway.chat-metadata-lifecycle", () =>
+      createGatewayChatMetadataLifecycle({ getConfig: getRuntimeConfig, log }),
+    ),
+    startupTrace.measure("gateway.config-revision-key", async () => {
       const { loadGatewayConfigRevisionProjector } = await import("./config-revision-token.js");
       return loadGatewayConfigRevisionProjector({ env: process.env });
-    },
-  );
+    }),
+  ]);
   const gatewayRequestContext = await startupTrace.measure("gateway.request-context", async () => {
     const { createGatewayRequestContext } = await import("./server-request-context.js");
     return createGatewayRequestContext({
@@ -138,6 +137,7 @@ export async function prepareGatewayKernelRequestRuntime(params: {
     getMethodRegistry: () => getAttachedGatewayMethodRegistry(),
     isDispatchAvailable: () => startupState.dispatchReady && !lifecycle.closePreludeStarted,
     logError: (message) => log.error(message),
+    prepareRestartRecovery: runtime.channelManager.recoverAutostartSuppression,
   });
   gatewayInstanceRuntimeRef.current = gatewayInstanceRuntime;
   gatewayRequestContext.resolveGatewayContext = () =>
